@@ -1,0 +1,31 @@
+name: CI Verify (vsag)
+
+on:
+  push:
+    branches: ["ci/gha-verify"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Clone upstream source
+        run: git clone --depth=1 --branch main https://github.com/antgroup/vsag.git source
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libssl-dev libcurl4-openssl-dev ccache
+      - name: Build release library
+        working-directory: source
+        run: make release
+      - name: Show artifacts
+        working-directory: source
+        run: find . -name "libvsag*.so*" -o -name "libvsag*.a" | head -10
