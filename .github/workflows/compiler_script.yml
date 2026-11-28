@@ -1,0 +1,101 @@
+name: compiler-script
+
+on:
+  push:
+    branches: ["ci/compiler-script"]
+  workflow_dispatch:
+
+concurrency:
+  group: compiler-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Detect build system
+        id: detect
+        shell: bash
+        run: |
+          ls
+          KIND=""; DIR=""
+          for d in . backend frontend server core src app; do
+            if [ -z "$KIND" ]; then
+              if [ -f "$d/pom.xml" ]; then KIND=maven; DIR=$d
+              elif [ -f "$d/build.gradle" ] || [ -f "$d/build.gradle.kts" ]; then KIND=gradle; DIR=$d
+              elif [ -f "$d/CMakeLists.txt" ]; then KIND=cmake; DIR=$d
+              elif [ -f "$d/Cargo.toml" ]; then KIND=cargo; DIR=$d
+              elif [ -f "$d/go.mod" ]; then KIND=go; DIR=$d
+              elif [ -f "$d/package.json" ]; then KIND=node; DIR=$d
+              elif [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ]; then KIND=python; DIR=$d
+              elif [ -f "$d/Makefile" ]; then KIND=make; DIR=$d
+              fi
+            fi
+          done
+          [ -z "$KIND" ] && KIND=none && DIR=.
+          echo "kind=$KIND" >> $GITHUB_OUTPUT
+          echo "dir=$DIR" >> $GITHUB_OUTPUT
+          cat $GITHUB_OUTPUT
+
+      - name: Setup Go
+        if: steps.detect.outputs.kind == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Setup Java 17
+        if: steps.detect.outputs.kind == 'maven' || steps.detect.outputs.kind == 'gradle'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Node
+        if: steps.detect.outputs.kind == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        if: steps.detect.outputs.kind == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        if: steps.detect.outputs.kind == 'cargo'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile
+        shell: bash
+        env:
+          KIND: ${{ steps.detect.outputs.kind }}
+          DIR: ${{ steps.detect.outputs.dir }}
+        run: |
+          set -o pipefail
+          cd "$DIR"
+          echo "kind=$KIND dir=$DIR"
+          case "$KIND" in
+            maven) mvn -B -DskipTests package 2>&1 | tail -n 90 ;;
+            gradle) chmod +x gradlew 2>/dev/null; ./gradlew build -x test --no-daemon 2>&1 | tail -n 90 ;;
+            cmake)
+              sudo apt-get update -qq && sudo apt-get install -y -qq build-essential cmake pkg-config >/dev/null
+              cmake -B build -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -n 40
+              cmake --build build -j"$(nproc)" 2>&1 | tail -n 90 ;;
+            cargo) cargo build --release 2>&1 | tail -n 90 ;;
+            go) go build ./... 2>&1 | tail -n 90 ;;
+            node)
+              (npm ci 2>&1 || npm install 2>&1) | tail -n 40
+              npm run build --if-present 2>&1 | tail -n 90 ;;
+            python)
+              python -m pip install --upgrade pip build wheel >/dev/null
+              python -m build 2>&1 | tail -n 60 || python -m compileall -q . 2>&1 | tail -n 90 ;;
+            make) make -j"$(nproc)" 2>&1 | tail -n 90 ;;
+            *) echo "no build system detected"; ls -la ;;
+          esac
